@@ -7,6 +7,10 @@ import noesis
 #rapi methods should only be used during handler callbacks
 import rapi
 
+NOEPY_HEADER = 0x1337F00
+NOEPY_VERSION = 0x7178173
+MAX_BONES_PER_MESH = 32
+
 #registerNoesisTypes is called by Noesis to allow the script to register formats.
 #Do not implement this function in script files unless you want them to be dedicated format modules!
 def registerNoesisTypes():
@@ -15,10 +19,8 @@ def registerNoesisTypes():
 	noesis.setHandlerLoadModel(handle, noepyLoadModel)
 	noesis.setHandlerWriteModel(handle, noepyWriteModel)
 	noesis.setHandlerWriteAnim(handle, noepyWriteAnim)
+	noesis.setTypeExportOptions(handle, "-maxbones %i"%MAX_BONES_PER_MESH)
 	return 1
-
-NOEPY_HEADER = 0x1337F00
-NOEPY_VERSION = 0x7178173
 
 #check if it's this type based on the data
 def noepyCheckType(data):
@@ -145,8 +147,12 @@ def noepyWriteModel(mdl, bs):
 	bs.writeInt(len(mdl.meshes))
 	for mesh in mdl.meshes:
 		boneMap = None
+		#generate a bone map
 		if len(mesh.weights) > 0:
 			boneMap = rapi.createBoneMap(mesh.weights)
+			if len(boneMap) > MAX_BONES_PER_MESH:
+				print("ERROR: Mesh contains too many bone references!") #should not happen when -maxbones is forced
+				return 0
 		bs.writeString(mesh.name)
 		bs.writeString(mesh.matName)
 		bs.writeInt(len(mesh.indices))
@@ -156,7 +162,7 @@ def noepyWriteModel(mdl, bs):
 		bs.writeInt(len(mesh.tangents))
 		bs.writeInt(len(mesh.colors))
 		bs.writeInt(len(mesh.weights))
-		#generate and write the bone map
+		#write the bone map
 		if boneMap is None:
 			bs.writeInt(0)
 		else:
