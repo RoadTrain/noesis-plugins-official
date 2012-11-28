@@ -9,7 +9,7 @@ import os
 MERGE_BONES = 0
 
 def registerNoesisTypes():
-	handle = noesis.registerTool("&Model merger", mergeToolMethod)
+	handle = noesis.registerTool("&Model merger", mergeToolMethod, "Merge all models of a given type and load them into a single scene")
 	return 1
 
 def mergeValidateInput(inVal):

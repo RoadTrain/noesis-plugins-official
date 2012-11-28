@@ -4,7 +4,7 @@ import os
 GAUSSIAN_BLUR_DEFAULT = 8.0
 
 def registerNoesisTypes():
-	handle = noesis.registerTool("&Gaussian blur", gbToolMethod)
+	handle = noesis.registerTool("&Gaussian blur", gbToolMethod, "Invoke Gaussian blur script")
 	return 1
 
 def gbValidateInput(inVal):

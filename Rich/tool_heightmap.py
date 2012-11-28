@@ -7,7 +7,7 @@ HEIGHT_MAX_DIMENSION = 256
 HEIGHT_BLUR = 4.0
 
 def registerNoesisTypes():
-	handle = noesis.registerTool("&Heightmesh generator", hmToolMethod)
+	handle = noesis.registerTool("&Heightmesh generator", hmToolMethod, "Generate and export a heightmesh from an image")
 	return 1
 
 def hmValidateInput(inVal):
