@@ -96,12 +96,7 @@ static void PostRender(int vh, modelMatrix_t *skinMats, int numSkinMats, float a
 	{
 		return;
 	}
-	bool didSkin = false;
-	if (skinMats && g_smdl->numBones == numSkinMats)
-	{ //perform skin transforms
-		rapi->rpgSkinModel(g_smdl, skinMats);
-		didSkin = true;
-	}
+	bool didSkin = rapi->Noesis_CopyInternalTransforms(g_smdl);
 	//vertex morph anims must be manually handled here if you want to support them in your custom rendering
 	float tfac = (float)rapi->Noesis_GetTimeMS() * 0.01f;
 	ngl->NGL_BindTexture(NULL);

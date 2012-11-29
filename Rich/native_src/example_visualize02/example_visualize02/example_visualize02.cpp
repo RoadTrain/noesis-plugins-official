@@ -375,15 +375,7 @@ static void PostRender(int vh, modelMatrix_t *skinMats, int numSkinMats, float a
 	{
 		return;
 	}
-	if (skinMats && g_smdl->numBones == numSkinMats)
-	{ //perform skin transforms
-		rapi->rpgSkinModel(g_smdl, skinMats);
-		g_useSkin = true;
-	}
-	else
-	{
-		g_useSkin = false;
-	}
+	g_useSkin = rapi->Noesis_CopyInternalTransforms(g_smdl);
 
 	if (g_checkRayX >= 0 && g_checkRayY >= 0)
 	{
