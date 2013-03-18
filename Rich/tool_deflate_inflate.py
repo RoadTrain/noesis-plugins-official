@@ -1,8 +1,6 @@
 from inc_noesis import *
 import os
 
-GAUSSIAN_BLUR_DEFAULT = 8.0
-
 def registerNoesisTypes():
 	handle = noesis.registerTool("&Deflate file", deflateToolMethod, "Deflate a file")
 	handle = noesis.registerTool("&Inflate file", inflateToolMethod, "Inflate a file")
