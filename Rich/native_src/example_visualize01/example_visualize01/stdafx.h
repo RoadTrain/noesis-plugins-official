@@ -27,10 +27,6 @@
 // Windows Header Files:
 #include <windows.h>
 
-#define NPLUGIN_API __declspec(dllexport)
-
-#include "../../cnt_arraylist.h"
-#include "../../cnt_bitstream.h"
 #include "../../pluginshare.h"
 
 extern mathImpFn_t *g_mfn;

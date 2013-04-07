@@ -5,8 +5,8 @@
 #include <gl/gl.h>
 #include <math.h>
 
-mathImpFn_t *g_mfn = NULL;
-noePluginFn_t *g_nfn = NULL;
+const char *g_pPluginName = "example_visualize01";
+const char *g_pPluginDesc = "Visualizer Example 01, by Dick.";
 
 #ifdef _MANAGED
 #pragma managed(push, off)
@@ -174,11 +174,8 @@ static int Visualizer_Invoke(int toolIdx, void *userData)
 }
 
 //called by Noesis to init the plugin
-NPLUGIN_API bool NPAPI_Init(mathImpFn_t *mathfn, noePluginFn_t *noepfn)
+bool NPAPI_InitLocal(void)
 {
-	g_mfn = mathfn;
-	g_nfn = noepfn;
-
 	int apiVer = g_nfn->NPAPI_GetAPIVersion();
 	if (apiVer < NOESIS_PLUGINAPI_VERSION)
 	{
@@ -200,20 +197,9 @@ NPLUGIN_API bool NPAPI_Init(mathImpFn_t *mathfn, noePluginFn_t *noepfn)
 }
 
 //called by Noesis before the plugin is freed
-NPLUGIN_API void NPAPI_Shutdown(void)
+void NPAPI_ShutdownLocal(void)
 {
-}
-
-NPLUGIN_API int NPAPI_GetPluginVer(void)
-{
-	return NOESIS_PLUGIN_VERSION;
-}
-
-NPLUGIN_API bool NPAPI_GetPluginInfo(noePluginInfo_t *infOut)
-{
-	strcpy_s(infOut->pluginName, 64, "example_visualize01");
-	strcpy_s(infOut->pluginDesc, 512, "Visualizer Example 01, by Dick.");
-	return true;
+	//nothing to do here
 }
 
 BOOL APIENTRY DllMain( HMODULE hModule,

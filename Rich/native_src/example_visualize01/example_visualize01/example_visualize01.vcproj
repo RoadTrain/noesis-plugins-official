@@ -210,47 +210,7 @@
 				Name="shared"
 				>
 				<File
-					RelativePath="..\..\cnt_array.cpp"
-					>
-					<FileConfiguration
-						Name="Debug|Win32"
-						>
-						<Tool
-							Name="VCCLCompilerTool"
-							UsePrecompiledHeader="0"
-						/>
-					</FileConfiguration>
-					<FileConfiguration
-						Name="Release|Win32"
-						>
-						<Tool
-							Name="VCCLCompilerTool"
-							UsePrecompiledHeader="0"
-						/>
-					</FileConfiguration>
-				</File>
-				<File
-					RelativePath="..\..\cnt_stream.cpp"
-					>
-					<FileConfiguration
-						Name="Debug|Win32"
-						>
-						<Tool
-							Name="VCCLCompilerTool"
-							UsePrecompiledHeader="0"
-						/>
-					</FileConfiguration>
-					<FileConfiguration
-						Name="Release|Win32"
-						>
-						<Tool
-							Name="VCCLCompilerTool"
-							UsePrecompiledHeader="0"
-						/>
-					</FileConfiguration>
-				</File>
-				<File
-					RelativePath="..\..\misc.cpp"
+					RelativePath="..\..\noesisplugin.cpp"
 					>
 					<FileConfiguration
 						Name="Debug|Win32"
@@ -284,11 +244,7 @@
 				Name="shared"
 				>
 				<File
-					RelativePath="..\..\cnt_arraylist.h"
-					>
-				</File>
-				<File
-					RelativePath="..\..\cnt_bitstream.h"
+					RelativePath="..\..\pluginclasses.h"
 					>
 				</File>
 				<File
