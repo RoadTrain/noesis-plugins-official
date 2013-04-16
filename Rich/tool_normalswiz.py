@@ -2,7 +2,7 @@ from inc_noesis import *
 import os
 
 def registerNoesisTypes():
-	handle = noesis.registerTool("&Normal swizzler", nswzToolMethod)
+	handle = noesis.registerTool("&Normal swizzler", nswzToolMethod, "Swaps red/alpha and derives Z")
 	return 1
 
 def nswzValidateInput(inVal):
