@@ -1,0 +1,9 @@
+<!-- images from http://www.miszalok.de/C_3D_XNA/C6_Skybox/XNAC6_e.htm -->
+<noesis_cubemap name="skycube">
+	<image name="sky_front.jpg" ori="posz" />
+	<image name="sky_back.jpg" ori="negz" />
+	<image name="sky_top.jpg" ori="posy" />
+	<image name="sky_bottom.jpg" ori="negy" />
+	<image name="sky_right.jpg" ori="posx" />
+	<image name="sky_left.jpg" ori="negx" />
+</noesis_cubemap>
