@@ -1,5 +1,4 @@
 from inc_noesis import *
-import os
 import random
 
 def registerNoesisTypes():
@@ -67,7 +66,7 @@ def tmMakeTextures():
 	return texList
 
 def tmToolMethod(toolIndex):
-	text = noesis.userPrompt(noesis.NOEUSERVAL_FILEPATH, "Enter Text", "Enter a string to generate a text model.", "Some text.", tmValidateInput)
+	text = noesis.userPrompt(noesis.NOEUSERVAL_STRING, "Enter Text", "Enter a string to generate a text model.", "Some text.", tmValidateInput)
 	if text is None:
 		return 0
 		
