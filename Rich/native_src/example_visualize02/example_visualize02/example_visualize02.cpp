@@ -40,6 +40,63 @@ static int g_hitFaceIdx = -1;
 static int g_numFaceSel = 0;
 static bool g_buttonsRegistered = false;
 
+//step through and draw lines for a single spline
+static void DrawSplineChar(noeSharedGL_t *ngl, noeRAPI_t *rapi, const noesisSplineSet_t *ss, float x, float y, float scale)
+{
+	if (ss->numSplines <= 0)
+	{
+		return;
+	}
+
+	ngl->NGL_Begin(NGL_PRIM_LINES);
+	const float fStep = 0.25f;
+	for (int i = 0; i < ss->numSplines; i++)
+	{
+		const noesisSpline_t *spline = ss->splines+i;
+		for (int j = 0; j < spline->numKnots; j++)
+		{
+			int rawIndices[4] = { g_mfn->Math_WrapInt(j-1, spline->numKnots), j, g_mfn->Math_WrapInt(j+1, spline->numKnots), g_mfn->Math_WrapInt(j+2, spline->numKnots) };
+			const noesisSplineKnot_t *rawKnots[4] = { spline->knots+rawIndices[0], spline->knots+rawIndices[1], spline->knots+rawIndices[2], spline->knots+rawIndices[3] };
+			const noesisSplineKnot_t *knot = spline->knots+j;
+			const float *lastOut = rapi->Noesis_SplineLastOut(spline, j);
+			const float *lastPos = rapi->Noesis_SplineLastPos(spline, j);
+			for (float frac = 0.0f; frac < 1.0f; frac += fStep)
+			{
+				float fracNext = g_mfn->Math_Min2(frac+fStep, 1.0f);
+				float pos[3], posNext[3];
+				g_mfn->Math_CubicBezier3D(lastPos, lastOut, knot->in, knot->pos, frac, pos);
+				g_mfn->Math_CubicBezier3D(lastPos, lastOut, knot->in, knot->pos, fracNext, posNext);
+				ngl->NGL_Vertex3f(pos[0]*scale + x, pos[1]*scale + y, 0.0f);
+				ngl->NGL_Vertex3f(posNext[0]*scale + x, posNext[1]*scale + y, 0.0f);
+			}
+		}
+	}
+	ngl->NGL_End();
+}
+
+//draw a string using spline characters
+static float DrawSplineString(noeSharedGL_t *ngl, noeRAPI_t *rapi, float x, float y, float scale, const char *str)
+{
+	const float charPad = 8.0f;
+	float cx = x;
+	float cy = y;
+	for (int i = 0; str[i]; i++)
+	{
+		const noesisSplineSet_t *ss = g_nfn->Noesis_GetCharSplineSet(str[i]);
+		if (!ss || !ss->splines)
+		{
+			continue;
+		}
+
+		float cmins[3], cmaxs[3];
+		rapi->Noesis_GetSplineSetBounds(ss, cmins, cmaxs);
+		//draw from the center on x, but keep vertical offsets
+		DrawSplineChar(ngl, rapi, ss, cx + (cmaxs[0]-cmins[0])*scale*0.5f, cy, scale);
+		cx += ((cmaxs[0]-cmins[0])+charPad)*scale;
+	}
+	return cx;
+}
+
 //shared model should never be loaded when a new model is loaded
 static void OnModelLoaded(int vh)
 {
@@ -493,6 +550,90 @@ static void PostRender(int vh, modelMatrix_t *skinMats, int numSkinMats, float a
 
 	ngl->NGL_LineWidth(1.0f);
 	ngl->NGL_Enable(GL_CULL_FACE);
+
+	if (g_hitMeshIdx >= 0 && g_hitFaceIdx >= 0)
+	{
+		sharedMesh_t *mesh = g_smdl->meshes+g_hitMeshIdx;
+		modelTriFace_t *tri = mesh->tris+g_hitFaceIdx;
+		modelVert_t *verts = (g_useSkin && mesh->transVerts) ? mesh->transVerts : mesh->verts;
+		modelVert_t *normals = (g_useSkin && mesh->transNormals) ? mesh->transNormals : mesh->normals;
+
+		ngl->NGL_ResetProjection(true);
+		float screenW, screenH;
+		ngl->NGL_GetResolution(screenW, screenH);
+
+		const float scale = 0.4f;
+		const float charHeight = 90.0f * scale;
+		float y = 0.0f;
+
+		ngl->NGL_Enable(GL_BLEND);
+		ngl->NGL_BlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+		ngl->NGL_Color4f(1.0f, 1.0f, 0.0f, 1.0f);
+
+		char str[MAX_NOESIS_PATH];
+		if (mesh->uvs)
+		{
+			modelTexCoord_t *uv1 = mesh->uvs+tri->a;
+			modelTexCoord_t *uv2 = mesh->uvs+tri->b;
+			modelTexCoord_t *uv3 = mesh->uvs+tri->c;
+			sprintf_s(str, MAX_NOESIS_PATH, "(%f, %f)", uv3->u, uv3->v);
+			DrawSplineString(ngl, rapi, 32.0f, screenH-64.0f-y, scale, str);
+			y += charHeight;
+			sprintf_s(str, MAX_NOESIS_PATH, "(%f, %f)", uv2->u, uv2->v);
+			DrawSplineString(ngl, rapi, 32.0f, screenH-64.0f-y, scale, str);
+			y += charHeight;
+			sprintf_s(str, MAX_NOESIS_PATH, "(%f, %f)", uv1->u, uv1->v);
+			DrawSplineString(ngl, rapi, 32.0f, screenH-64.0f-y, scale, str);
+			y += charHeight;
+			DrawSplineString(ngl, rapi, 16.0f, screenH-64.0f-y, scale, "UV:");
+			y += charHeight;
+		}
+		if (normals)
+		{
+			modelVert_t *normal1 = normals+tri->a;
+			modelVert_t *normal2 = normals+tri->b;
+			modelVert_t *normal3 = normals+tri->c;
+			sprintf_s(str, MAX_NOESIS_PATH, "(%f, %f, %f)", normal3->x, normal3->y, normal3->z);
+			DrawSplineString(ngl, rapi, 32.0f, screenH-64.0f-y, scale, str);
+			y += charHeight;
+			sprintf_s(str, MAX_NOESIS_PATH, "(%f, %f, %f)", normal2->x, normal2->y, normal2->z);
+			DrawSplineString(ngl, rapi, 32.0f, screenH-64.0f-y, scale, str);
+			y += charHeight;
+			sprintf_s(str, MAX_NOESIS_PATH, "(%f, %f, %f)", normal1->x, normal1->y, normal1->z);
+			DrawSplineString(ngl, rapi, 32.0f, screenH-64.0f-y, scale, str);
+			y += charHeight;
+			DrawSplineString(ngl, rapi, 16.0f, screenH-64.0f-y, scale, "Normal:");
+			y += charHeight;
+		}
+		if (verts)
+		{
+			modelVert_t *vert1 = verts+tri->a;
+			modelVert_t *vert2 = verts+tri->b;
+			modelVert_t *vert3 = verts+tri->c;
+			sprintf_s(str, MAX_NOESIS_PATH, "(%f, %f, %f)", vert3->x, vert3->y, vert3->z);
+			DrawSplineString(ngl, rapi, 32.0f, screenH-64.0f-y, scale, str);
+			y += charHeight;
+			sprintf_s(str, MAX_NOESIS_PATH, "(%f, %f, %f)", vert2->x, vert2->y, vert2->z);
+			DrawSplineString(ngl, rapi, 32.0f, screenH-64.0f-y, scale, str);
+			y += charHeight;
+			sprintf_s(str, MAX_NOESIS_PATH, "(%f, %f, %f)", vert1->x, vert1->y, vert1->z);
+			DrawSplineString(ngl, rapi, 32.0f, screenH-64.0f-y, scale, str);
+			y += charHeight;
+			DrawSplineString(ngl, rapi, 16.0f, screenH-64.0f-y, scale, "Position:");
+			y += charHeight;
+		}
+
+		sprintf_s(str, MAX_NOESIS_PATH, "Triangle: %i", g_hitFaceIdx);
+		DrawSplineString(ngl, rapi, 16.0f, screenH-64.0f-y, scale, str);
+		y += charHeight;
+		
+		sprintf_s(str, MAX_NOESIS_PATH, "%s (index %i)", (mesh->name) ? mesh->name : "Mesh", g_hitMeshIdx);
+		DrawSplineString(ngl, rapi, 16.0f, screenH-64.0f-y, scale, str);
+
+		ngl->NGL_Disable(GL_BLEND);
+		ngl->NGL_Color4f(1.0f, 1.0f, 1.0f, 1.0f);
+		ngl->NGL_ResetProjection(false);
+	}
 }
 
 //process new input
