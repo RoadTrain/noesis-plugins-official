@@ -10,23 +10,23 @@ MERGE_BONES = 0
 
 def registerNoesisTypes():
 	handle = noesis.registerTool("&Model merger", mergeToolMethod, "Merge all models of a given type and load them into a single scene")
+	noesis.setToolFlags(handle, noesis.NTOOLFLAG_CONTEXTITEM)
+	noesis.setToolVisibleCallback(handle, mergeContextVisible)
 	return 1
 
-def mergeValidateInput(inVal):
-	if os.path.exists(inVal) is not True:
-		return "'" + inVal + "' is not a valid file path!"
-	return None
+def mergeContextVisible(toolIndex, selectedFile):
+	if selectedFile is None or (noesis.getFormatExtensionFlags(os.path.splitext(selectedFile)[1]) & noesis.NFORMATFLAG_MODELREAD) == 0:
+		return 0
+	return 1
 
 def mergeToolMethod(toolIndex):
-	r = noesis.userPrompt(noesis.NOEUSERVAL_FILEPATH, "Select File", "Select a model, and all models of that type in the same directory will be loaded as one.", "", mergeValidateInput)
-	if r is None:
-		return 0
+	basePath = noesis.getSelectedFile()
 	
 	dstFilePath = noesis.getScenesPath() + "merger.noesis"
 	with open(dstFilePath, "w") as f:
 		f.write("NOESIS_SCENE_FILE\r\nversion 1\r\nphysicslib		\"\"\r\ndefaultAxis		\"0\"\r\n\r\n")
-		dirName = os.path.dirname(r)
-		baseFileName, baseFileExt = os.path.splitext(r)
+		dirName = os.path.dirname(basePath)
+		baseFileName, baseFileExt = os.path.splitext(basePath)
 		dirList = os.listdir(dirName)
 		numObj = 0
 		for fileName in dirList:
@@ -41,6 +41,6 @@ def mergeToolMethod(toolIndex):
 						f.write("	mergeBones	\"" + "%i"%MERGE_BONES + "\"\r\n")
 				f.write("}\r\n")
 				numObj += 1
-	if noesis.openFile(dstFilePath) is not True:
+	if noesis.openAndRemoveTempFile(dstFilePath) is not True:
 		noesis.messagePrompt("Could not open merged model file!")
 	return 0
