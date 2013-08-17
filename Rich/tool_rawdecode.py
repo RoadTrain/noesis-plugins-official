@@ -1,22 +1,22 @@
 from inc_noesis import *
 import os
 
-RAWDECODE_STRING = "640;480;r5g5b5p1"
+RAWDECODE_STRING = "640;480;r5g5b5p1;0"
 
 def registerNoesisTypes():
 	handle = noesis.registerTool("Raw image decode", rdToolMethod, "Perform a raw image decode.")
 	noesis.setToolFlags(handle, noesis.NTOOLFLAG_CONTEXTITEM)
 	return 1
 
-def rdGetOptionList(optionString):
+def rdGetOptionDict(optionString):
 	try:
 		l = optionString.split(";")
-		return {"width":int(l[0]), "height":int(l[1]), "format":l[2]}
+		return {"width":int(l[0]), "height":int(l[1]), "format":l[2], "offset":int(l[3])}
 	except:
 		return None
 	
 def rdValidateOptionString(inVal):
-	options = rdGetOptionList(inVal)
+	options = rdGetOptionDict(inVal)
 	if options is None:
 		return "Invalid format string."
 	return None
@@ -29,13 +29,13 @@ def rdToolMethod(toolIndex):
 
 	#prompt for the decoding spec string
 	global RAWDECODE_STRING
-	optionString = noesis.userPrompt(noesis.NOEUSERVAL_STRING, "Option String", "Enter the decode specification string in the format of width;height;format.", RAWDECODE_STRING, rdValidateOptionString)
+	optionString = noesis.userPrompt(noesis.NOEUSERVAL_STRING, "Option String", "Enter the decode specification string in the format of width;height;format;offset.", RAWDECODE_STRING, rdValidateOptionString)
 	if optionString is None:
 		return 0
 	#store the string globally so it can be remembered next time the script is run
 	RAWDECODE_STRING = optionString
 	#parse options out of the spec string
-	options = rdGetOptionList(optionString)
+	options = rdGetOptionDict(optionString)
 	if options is None:
 		return 0
 
@@ -48,7 +48,7 @@ def rdToolMethod(toolIndex):
 	
 	#load the file up and decode it using the spec string
 	rawData = rapi.loadIntoByteArray(srcName)
-	rgba = rapi.imageDecodeRaw(rawData, options["width"], options["height"], options["format"])
+	rgba = rapi.imageDecodeRaw(rawData[options["offset"]:], options["width"], options["height"], options["format"])
 	#create a texture for the decoded image
 	tex = NoeTexture(dstName, options["width"], options["height"], rgba, noesis.NOESISTEX_RGBA32)
 	
