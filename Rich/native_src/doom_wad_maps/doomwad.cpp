@@ -24,6 +24,11 @@ const char *g_pPluginDesc = "Doom map/wad handler, by Dick.";
 int g_fmtHandle = -1;
 wadOpts_t *g_opts = NULL;
 
+//novel super-hacky idea. most partition lines overlap linedefs that are still in the map, and the real
+//problem with precision loss is in the directional component. if we can match a node's partition line
+//to a linedef, we can use the verts to calculate a new high-precision direction.
+#define RECOVER_NODE_PARTITION_PRECISION 2
+
 static inline void convenient_set_color(noeRAPI_t *rapi, float r, float g, float b)
 {
 	float clr[4] = {r, g, b, 1.0f};
@@ -333,6 +338,29 @@ static inline polyReal_t get_point_dist_from_line(const polyReal_t *point, const
 	return sqrt(vec_squarelen_2d(pointOnLineToPoint));
 }
 
+static inline polyReal_t get_point_dist_from_line_seg_sq(const polyReal_t *point, const polyReal_t *linePos, const polyReal_t *lineLen)
+{
+	const polyReal_t lineLenSq = vec_squarelen_2d(lineLen);
+	polyReal_t pointDir[2] = { point[0]-linePos[0], point[1]-linePos[1] };
+	const polyReal_t frac = vec_dot_2d(pointDir, lineLen) / lineLenSq;
+	if (frac < 0.0)
+	{
+		return vec_squarelen_2d(pointDir);
+	}
+	else if (frac > 1.0)
+	{
+		pointDir[0] -= lineLen[0];
+		pointDir[1] -= lineLen[1];
+		return vec_squarelen_2d(pointDir);
+	}
+	//we don't care if it actually falls on the line segment, we just want to get distance
+	//from the point projected on the line.
+	const polyReal_t pointOnLine[2] = { linePos[0] + frac*lineLen[0], linePos[1] + frac*lineLen[1] };
+	const polyReal_t pointOnLineToPoint[2] = { point[0]-pointOnLine[0], point[1]-pointOnLine[1] };
+
+	return vec_squarelen_2d(pointOnLineToPoint);
+}
+
 static inline int chop_convex_poly(noeRAPI_t *rapi, convexMapPoly_t *convexPoly, segChopLine_t *chopLine, polyPoint_t *midPoint,
 								   polyReal_t minLenToCut)
 {
@@ -412,8 +440,8 @@ static inline int chop_convex_poly(noeRAPI_t *rapi, convexMapPoly_t *convexPoly,
 
 	if (hitEdgeCount == maxHitEdges)
 	{
-		if ((hitFracs[0] < overlapEps || 1.0f-hitFracs[0] <= overlapEps) &&
-			(hitFracs[1] < overlapEps || 1.0f-hitFracs[1] <= overlapEps))
+		if ((hitFracs[0] < overlapEps || 1.0-hitFracs[0] <= overlapEps) &&
+			(hitFracs[1] < overlapEps || 1.0-hitFracs[1] <= overlapEps))
 		{
 			//we're pretty much directly overlapping an existing edge, so don't do anything.
 			return 0;
@@ -421,7 +449,7 @@ static inline int chop_convex_poly(noeRAPI_t *rapi, convexMapPoly_t *convexPoly,
 
 		for (int i = 0; i < hitEdgeCount; i++)
 		{
-			if (hitFracs[i] != 0.0f)
+			if (hitFracs[i] != 0.0)
 			{
 				//don't actually need to split if we're on the tip of the segment.
 				//warning: this call may invalidate pointers to convex poly data due to reallocation.
@@ -495,7 +523,35 @@ static inline void free_convex_poly(noeRAPI_t *rapi, convexMapPoly_t *convexPoly
 	memset(convexPoly, 0, sizeof(convexMapPoly_t));
 }
 
-static bool should_render_linedef_area(const char *texName)
+static inline void decode_glbsp_vert(const glbspVert_t *vert, polyReal_t *dst)
+{
+	dst[0] = polyReal_t(vert->xWhole) + polyReal_t(vert->xFrac)/65535.0;
+	dst[1] = polyReal_t(vert->yWhole) + polyReal_t(vert->yFrac)/65535.0;
+}
+
+static inline void set_color_for_sector_light(noeRAPI_t *rapi, memLump_t &colorMapLump, mUShort_t lightLevel)
+{
+	float l = float(lightLevel) / 255.0f;
+	convenient_set_color(rapi, l, l, l);
+}
+
+static inline BYTE *apply_color_palette(noeRAPI_t *rapi, BYTE *pixelData, BYTE *palData, int width, int height)
+{
+	BYTE *colorData = (BYTE *)rapi->Noesis_UnpooledAlloc(width*height*4);
+	for (int i = 0; i < width*height; i++)
+	{
+		BYTE pix = pixelData[i];
+		BYTE *color = palData + pix*3;
+		BYTE *dst = colorData + i*4;
+		dst[0] = color[0];
+		dst[1] = color[1];
+		dst[2] = color[2];
+		dst[3] = 255;
+	}
+	return colorData;
+}
+
+static inline bool should_render_linedef_area(const char *texName)
 {
 	if (texName[0] != '-' || texName[1] != 0)
 	{
@@ -640,28 +696,6 @@ static void render_linedef_portion(noeRAPI_t *rapi, doomMapRes_t &mr, const char
 	rapi->rpgEnd();
 }
 
-static inline void set_color_for_sector_light(noeRAPI_t *rapi, memLump_t &colorMapLump, mUShort_t lightLevel)
-{
-	float l = float(lightLevel) / 255.0f;
-	convenient_set_color(rapi, l, l, l);
-}
-
-static inline BYTE *apply_color_palette(noeRAPI_t *rapi, BYTE *pixelData, BYTE *palData, int width, int height)
-{
-	BYTE *colorData = (BYTE *)rapi->Noesis_UnpooledAlloc(width*height*4);
-	for (int i = 0; i < width*height; i++)
-	{
-		BYTE pix = pixelData[i];
-		BYTE *color = palData + pix*3;
-		BYTE *dst = colorData + i*4;
-		dst[0] = color[0];
-		dst[1] = color[1];
-		dst[2] = color[2];
-		dst[3] = 255;
-	}
-	return colorData;
-}
-
 //get a lump for a specific map
 static wadLump_t *Model_DoomWad_GetMapLump(memLump_t &mapBase, char *lumpName)
 {
@@ -701,42 +735,80 @@ bool Model_DoomWad_Check(BYTE *fileBuffer, int bufferLen, noeRAPI_t *rapi)
 	return true;
 }
 
-//load a single map model
-static noesisModel_t *Model_DoomWad_LoadMap(memLump_t &ml, CArrayList<memLump_t> &allLumps, memLump_t &colorMapLump, doomMapRes_t &mr, noeRAPI_t *rapi)
+//generate polygons directly from gl subsectors
+static extraSubSectData_t *Model_DoomWad_TranslateGLSubSectors(
+												mapLineDef_t *lineDefs, int numLineDefs, mapSideDef_t *sideDefs, int numSideDefs,
+												mapVert_t *verts, int numVerts, glbspVert_t *glVerts, int numGLVerts,
+												glbspSeg_t *glSegs, int numGLSegs, glbspSubSect_t *glSubSects, int numGLSubSects,
+												LocalMemPool &localPool, noeRAPI_t *rapi)
 {
-	wadLump_t *lineDefsL = Model_DoomWad_GetMapLump(ml, "LINEDEFS");
-	wadLump_t *sideDefsL = Model_DoomWad_GetMapLump(ml, "SIDEDEFS");
-	wadLump_t *vertexesL = Model_DoomWad_GetMapLump(ml, "VERTEXES");
-	wadLump_t *segsL = Model_DoomWad_GetMapLump(ml, "SEGS\0\0\0\0");
-	wadLump_t *subSectorsL = Model_DoomWad_GetMapLump(ml, "SSECTORS");
-	wadLump_t *nodesL = Model_DoomWad_GetMapLump(ml, "NODES\0\0\0");
-	wadLump_t *sectorsL = Model_DoomWad_GetMapLump(ml, "SECTORS\0");
-	if (!lineDefsL || !sideDefsL || !vertexesL || !segsL || !subSectorsL || !nodesL || !sectorsL)
+	extraSubSectData_t *extraSS = (extraSubSectData_t *)localPool.Alloc(sizeof(extraSubSectData_t)*numGLSubSects);
+	for (int i = 0; i < numGLSubSects; i++)
 	{
-		return NULL;
-	}
-	BYTE *base = (BYTE *)ml.base;
-	mapLineDef_t *lineDefs = (mapLineDef_t *)(base + lineDefsL->ofs);
-	int numLineDefs = (lineDefsL->size / sizeof(mapLineDef_t));
-	mapSideDef_t *sideDefs = (mapSideDef_t *)(base + sideDefsL->ofs);
-	int numSideDefs = (sideDefsL->size / sizeof(mapSideDef_t));
-	mapVert_t *verts = (mapVert_t *)(base + vertexesL->ofs);
-	int numVerts = (vertexesL->size / sizeof(mapVert_t));
-	mapSector_t *sectors = (mapSector_t *)(base + sectorsL->ofs);
-	int numSectors = (sectorsL->size / sizeof(mapSector_t));
-	mapSubSector_t *subSectors = (mapSubSector_t *)(base + subSectorsL->ofs);
-	int numSubSectors = (subSectorsL->size / sizeof(mapSubSector_t));
-	mapSeg_t *segs = (mapSeg_t *)(base + segsL->ofs);
-	int numSegs = (segsL->size / sizeof(mapSeg_t));
-	mapNode_t *nodes = (mapNode_t *)(base + nodesL->ofs);
-	int numNodes = (nodesL->size / sizeof(mapNode_t));
-	if (numLineDefs <= 0 || numSideDefs <= 0 || numVerts <= 0 || numSectors <= 0 || numSubSectors <= 0 || numSegs <= 0 || numNodes <= 0)
-	{
-		return NULL;
+		extraSubSectData_t *ess = extraSS+i;
+		ess->nodeParent = -1; //don't care on this path
+
+		const glbspSubSect_t *glSS = glSubSects+i;
+		unsigned int firstSegIndex = 0;
+		glbspSeg_t *firstSeg = glSegs+glSS->firstSeg;
+		while (firstSeg->lineDef == 0xFFFF && firstSegIndex < glSS->segNum-1)
+		{
+			firstSegIndex++;
+			firstSeg = glSegs+glSS->firstSeg+firstSegIndex;
+		}
+		if (firstSeg->lineDef == 0xFFFF)
+		{
+			rapi->LogOutput("WARNING: Nothing but minisegs on subsector %i.\n", i);
+			continue;
+		}
+
+		const mapLineDef_t *lineDef = lineDefs+firstSeg->lineDef;
+		const int sideDefIndex = (firstSeg->side == 0) ? lineDef->rightSideDef : lineDef->leftSideDef;
+		if (sideDefIndex == 0xFFFF)
+		{
+			rapi->LogOutput("WARNING: Could not get sector for subsector %i.\n", i);
+			continue;
+		}
+		const mapSideDef_t *sideDef = sideDefs+sideDefIndex;
+		ess->sectorIndex = sideDef->sectorNum;
+
+		ess->numPoints = glSS->segNum;
+		ess->convexPoints = (polyPoint_t *)localPool.Alloc(sizeof(polyPoint_t)*glSS->segNum);
+		for (unsigned int j = 0; j < glSS->segNum; j++)
+		{
+			const glbspSeg_t *seg = glSegs+glSS->firstSeg+j;
+			polyPoint_t *dstPos = ess->convexPoints+(glSS->segNum-1-j);
+			int vertIndex = (seg->startVert & 0x3FFFFFFF);
+			if ((seg->startVert & 0xC0000000))
+			{
+				assert(vertIndex < numGLVerts);
+				//it's a gl vert
+				const glbspVert_t *vert = glVerts+vertIndex;
+				decode_glbsp_vert(vert, dstPos->p);
+			}
+			else
+			{
+				assert(vertIndex < numVerts);
+				const mapVert_t *vert = verts+vertIndex;
+				dstPos->p[0] = polyReal_t(vert->pos[0]);
+				dstPos->p[1] = polyReal_t(vert->pos[1]);
+			}
+		}
 	}
 
-	LocalMemPool localPool;
+	return extraSS;
+}
 
+//this works lovely on doom1, but in doom2 the node builder starts throwing in all kinds of non-convex subsectors that
+//this routine does not deal with at all. after throwing some ideas around on how to deal with them myself, i decided
+//it's not worth doing the work of rebuilding subsectors and just added glbsp support.
+static extraSubSectData_t *Model_DoomWad_CreateConvexSubsectorPolygons(
+											mapLineDef_t *lineDefs, int numLineDefs, mapSideDef_t *sideDefs, int numSideDefs,
+											mapVert_t *verts, int numVerts, mapSector_t *sectors, int numSectors,
+											mapSubSector_t *subSectors, int numSubSectors, mapSeg_t *segs, int numSegs,
+											mapNode_t *nodes, int numNodes, LocalMemPool &localPool, noeRAPI_t *rapi
+											)
+{
 	extraSubSectData_t *extraSS = (extraSubSectData_t *)localPool.Alloc(sizeof(extraSubSectData_t)*numSubSectors);
 	extraNodeData_t *extraNodes = (extraNodeData_t *)localPool.Alloc(sizeof(extraNodeData_t)*numNodes);
 	memset(extraSS, 0, sizeof(extraSubSectData_t)*numSubSectors);
@@ -750,9 +822,12 @@ static noesisModel_t *Model_DoomWad_LoadMap(memLump_t &ml, CArrayList<memLump_t>
 		extraNodes[i].parentIndex = -1;
 	}
 
+#if RECOVER_NODE_PARTITION_PRECISION != 0
+	CArrayList<const mapLineDef_t *> nodeLineCandidates;
+#endif
 	for (int i = 0; i < numNodes; i++)
 	{
-		mapNode_t *node = nodes+i;
+		const mapNode_t *node = nodes+i;
 		for (int j = 0; j < 2; j++)
 		{
 			if (node->children[j] & 0x8000)
@@ -769,6 +844,93 @@ static noesisModel_t *Model_DoomWad_LoadMap(memLump_t &ml, CArrayList<memLump_t>
 				childEN->parentIndex = i;
 			}
 		}
+
+		extraNodeData_t *en = extraNodes+i;
+		en->partLine[0] = polyReal_t(node->partLine[0]);
+		en->partLine[1] = polyReal_t(node->partLine[1]);
+		en->partLineLen[0] = polyReal_t(node->partLineLen[0]);
+		en->partLineLen[1] = polyReal_t(node->partLineLen[1]);
+#if RECOVER_NODE_PARTITION_PRECISION == 1
+		for (int j = 0; j < numLineDefs; j++)
+		{
+			const mapLineDef_t *lineDef = lineDefs+j;
+			const mapVert_t *v1 = verts+lineDef->startVert;
+			const mapVert_t *v2 = verts+lineDef->endVert;
+			if ((v1->pos[0] == node->partLine[0] && v1->pos[1] == node->partLine[1]) ||
+				(v2->pos[0] == node->partLine[0] && v2->pos[1] == node->partLine[1]))
+			{
+				nodeLineCandidates.Append(lineDef);
+			}
+		}
+#elif RECOVER_NODE_PARTITION_PRECISION == 2
+		//we don't even need to care if the line actually starts in the same place. just try to find
+		//a segment that it's actually on or near, then we'll see if the direction if close enough.
+		for (int j = 0; j < numLineDefs; j++)
+		{
+			const mapLineDef_t *lineDef = lineDefs+j;
+			const mapVert_t *v1 = verts+lineDef->startVert;
+			const mapVert_t *v2 = verts+lineDef->endVert;
+
+			const polyReal_t pos[2] = { polyReal_t(v1->pos[0]), polyReal_t(v1->pos[1]) };
+			const polyReal_t dir[2] = { polyReal_t(v2->pos[0])-pos[0], polyReal_t(v2->pos[1])-pos[1] };
+
+			const polyReal_t lineDistSq = get_point_dist_from_line_seg_sq(en->partLine, pos, dir);
+			if (lineDistSq < 1.0)
+			{
+				nodeLineCandidates.Append(lineDef);
+			}
+		}
+#endif
+
+#if RECOVER_NODE_PARTITION_PRECISION != 0
+		if (nodeLineCandidates.Num() > 0)
+		{
+			polyReal_t normalizedLineDir[2] = { en->partLineLen[0], en->partLineLen[1] };
+			vec_normalize_2d(normalizedLineDir);
+			int bestCandidate = -1;
+			polyReal_t bestDir[2];
+			polyReal_t bestDif = 0.9; //don't use anything less than 0.9
+			for (int j = 0; j < nodeLineCandidates.Num(); j++)
+			{
+				const mapLineDef_t *lineDef = nodeLineCandidates[j];
+				const mapVert_t *v1 = verts+lineDef->startVert;
+				const mapVert_t *v2 = verts+lineDef->endVert;
+				polyReal_t dir[2] = { polyReal_t(v2->pos[0])-polyReal_t(v1->pos[0]), polyReal_t(v2->pos[1])-polyReal_t(v1->pos[1]) };
+				polyReal_t nDir[2] = { dir[0], dir[1] };
+				vec_normalize_2d(nDir);
+				//we don't actually care if length is similar, we only need directionality
+				polyReal_t dDot = vec_dot_2d(normalizedLineDir, nDir);
+				if (dDot < 0.0)
+				{
+					dDot = -dDot;
+					dir[0] = -dir[0];
+					dir[1] = -dir[1];
+				}
+				if (dDot > bestDif)
+				{
+					bestCandidate = j;
+					bestDir[0] = dir[0];
+					bestDir[1] = dir[1];
+					bestDif = dDot;
+				}
+			}
+			if (bestCandidate != -1)
+			{
+				en->partLineLen[0] = bestDir[0];
+				en->partLineLen[1] = bestDir[1];
+			}
+			nodeLineCandidates.Reset();
+		}
+		/*
+		else
+		{
+			polyReal_t ex[2] = {en->partLine[0]+en->partLineLen[0], en->partLine[1]+en->partLineLen[1]};
+			rapi->rpgSetName("CrappyLines");
+			debug_render_line(rapi, en->partLine, ex, 32.0f, 16.0f, 0.1f);
+			rapi->rpgSetName(NULL);
+		}
+		*/
+#endif
 	}
 
 	polyReal_t mapMins[2], mapMaxs[2];
@@ -787,77 +949,72 @@ static noesisModel_t *Model_DoomWad_LoadMap(memLump_t &ml, CArrayList<memLump_t>
 	convexMapPoly_t convexPoly;
 	memset(&convexPoly, 0, sizeof(convexMapPoly_t));
 
-	void *pgctx = rapi->rpgCreateContext();
 	for (int i = 0; i < numSubSectors; i++)
 	{
 		extraSubSectData_t *ess = extraSS+i;
-		mapSubSector_t *ss = subSectors+i;
+		const mapSubSector_t *ss = subSectors+i;
 
 		if (ess->nodeParent < 0)
 		{
 			continue;
 		}
 
+		assert(ss->segNum > 0);
 		set_convex_poly_from_bounds(rapi, &convexPoly, mapMins, mapMaxs);
-		int parentNode = ess->nodeParent;
+
 		polyPoint_t midPoint;
+		const mapSeg_t *firstSeg = segs+ss->firstSeg;
+		const mapVert_t *segV1 = verts+firstSeg->startVert;
+		const mapVert_t *segV2 = verts+firstSeg->endVert;
+		const polyReal_t segPos[2] = { polyReal_t(segV1->pos[0]), polyReal_t(segV1->pos[1]) };
+		polyReal_t segDir[2] = { polyReal_t(segV2->pos[0])-segPos[0], polyReal_t(segV2->pos[1])-segPos[1] };
 
-		mapSeg_t *firstSeg = segs+ss->firstSeg;
-
-		mapVert_t *segV1 = verts+firstSeg->firstVert;
-		mapVert_t *segV2 = verts+firstSeg->endVert;
-		polyReal_t segDir[2] = { polyReal_t(segV2->pos[0])-polyReal_t(segV1->pos[0]), polyReal_t(segV2->pos[1])-polyReal_t(segV1->pos[1]) };
-		midPoint.p[0] = polyReal_t(segV1->pos[0]) + segDir[0]*0.5f;
-		midPoint.p[1] = polyReal_t(segV1->pos[1]) + segDir[1]*0.5f;
+		midPoint.p[0] = polyReal_t(segV1->pos[0]) + segDir[0]*0.5;
+		midPoint.p[1] = polyReal_t(segV1->pos[1]) + segDir[1]*0.5;
 		vec_normalize_2d(segDir);
-		polyReal_t segRight[2] = { segDir[1], -segDir[0] };
-		midPoint.p[0] += segRight[0]*0.5f;
-		midPoint.p[1] += segRight[1]*0.5f;
+		const polyReal_t segRight[2] = { segDir[1], -segDir[0] };
+		//this is a little dangerous, line precision can end up chopping the sector down to nothing.
+		midPoint.p[0] += segRight[0]*0.9;
+		midPoint.p[1] += segRight[1]*0.9;
+		/*
+		debug_render_line(rapi, segV1->pos, segV2->pos, 32.0f, 16.f, 0.1f);
+		polyReal_t test[2] = { midPoint.p[0] + segRight[0]*12.0f, midPoint.p[1] + segRight[1]*12.0f };
+		debug_render_point(rapi, test, 32.0f, 24.0f);
+		*/
 
-		//we can figure out which sector this subsector belongs to by making sure the sector seg runs in the same direction as
-		//the linedef. if it runs opposite, we want the sector for the left sidedef. (is there a better way to figure this out?)
-		mapLineDef_t *lineDef = lineDefs+firstSeg->lineDef;
-		mapVert_t *lineV1 = verts+lineDef->startVert;
-		mapVert_t *lineV2 = verts+lineDef->endVert;
-		polyReal_t lineDir[2] = { polyReal_t(lineV2->pos[0])-polyReal_t(lineV1->pos[0]), polyReal_t(lineV2->pos[1])-polyReal_t(lineV1->pos[1]) };
-		vec_normalize_2d(lineDir);
-		mUShort_t *sideIndices = &lineDef->rightSideDef;
-		int whichSide = (vec_dot_2d(segDir, lineDir) > 0.0f) ? 0 : 1;
-		int sideDefIndex = sideIndices[whichSide];
+		const mapLineDef_t *lineDef = lineDefs+firstSeg->lineDef;
+		const int sideDefIndex = (firstSeg->side == 0) ? lineDef->rightSideDef : lineDef->leftSideDef;
 		if (sideDefIndex == 0xFFFF)
 		{
-			sideDefIndex = sideIndices[(whichSide+1) & 1];
-			if (sideDefIndex == 0xFFFF)
-			{
-				rapi->LogOutput("WARNING: Could not get sector for subsector %i.\n", i);
-				continue;
-			}
+			rapi->LogOutput("WARNING: Could not get sector for subsector %i.\n", i);
+			continue;
 		}
 		mapSideDef_t *sideDef = sideDefs+sideDefIndex;
 		//mapSector_t *sector = sectors+sideDef->sectorNum;
 		ess->sectorIndex = sideDef->sectorNum;
 
 		//chop the convex poly with all of the parent node planes
+		int parentNode = ess->nodeParent;
 		while (parentNode >= 0)
 		{
-			mapNode_t *node = nodes+parentNode;
-			extraNodeData_t *en = extraNodes+parentNode;
+			const mapNode_t *node = nodes+parentNode;
+			const extraNodeData_t *en = extraNodes+parentNode;
 			parentNode = en->parentIndex;
 
 			segChopLine_t chopLine;
-			chopLine.pos[0] = polyReal_t(node->partLine[0]);
-			chopLine.pos[1] = polyReal_t(node->partLine[1]);
-			chopLine.length[0] = polyReal_t(node->partLineLen[0]);
-			chopLine.length[1] = polyReal_t(node->partLineLen[1]);
-			chop_convex_poly(rapi, &convexPoly, &chopLine, &midPoint,
-				(g_opts && g_opts->minSecCutDist != 0.0) ? g_opts->minSecCutDist : 0.0);
+			chopLine.pos[0] = polyReal_t(en->partLine[0]);
+			chopLine.pos[1] = polyReal_t(en->partLine[1]);
+			chopLine.length[0] = polyReal_t(en->partLineLen[0]);
+			chopLine.length[1] = polyReal_t(en->partLineLen[1]);
+			chop_convex_poly(rapi, &convexPoly, &chopLine, &midPoint, 0.0);
 		}
 		//now chop it with the subsector line segments
 		for (int j = 0; j < ss->segNum; j++)
 		{
-			mapSeg_t *seg = segs+ss->firstSeg+j;
-			mapVert_t *v1 = verts+seg->firstVert;
-			mapVert_t *v2 = verts+seg->endVert;
+			const mapSeg_t *seg = segs+ss->firstSeg+j;
+			const mapLineDef_t *lineDef = lineDefs+seg->lineDef;
+			const mapVert_t *v1 = verts+lineDef->startVert;
+			const mapVert_t *v2 = verts+lineDef->endVert;
 
 			segChopLine_t chopLine;
 			chopLine.pos[0] = polyReal_t(v1->pos[0]);
@@ -867,12 +1024,10 @@ static noesisModel_t *Model_DoomWad_LoadMap(memLump_t &ml, CArrayList<memLump_t>
 			//typically, once we get to the subsector segments, the damage has been done. so we don't want to
 			//cut into the subsector even more unless it's going to take a significant amount of geometry off,
 			//otherwise we're likely to just produce ugly slivers due to imprecision and edges not lining up
-			//between node planes and segments. so we use a default min cut distance of 2.
-			polyReal_t segCutMin = (g_opts && g_opts->minSecCutDist != 0.0) ? g_opts->minSecCutDist : 2.0;
-			if (segCutMin > 0.0 && segCutMin < 2.0)
-			{
-				segCutMin = 2.0;
-			}
+			//between node planes and segments. so we use a default min cut distance of 8.
+			//(note - i've bumped this from 2 to 16 because excessive imprecision in segs causes a lot of slices
+			//through subsectors otherwise. this is a shitty solution.)
+			const polyReal_t segCutMin = (g_opts->minSecCutDist != 0.0) ? g_opts->minSecCutDist : 16.0;
 			chop_convex_poly(rapi, &convexPoly, &chopLine, &midPoint, segCutMin);
 		}
 
@@ -882,14 +1037,14 @@ static noesisModel_t *Model_DoomWad_LoadMap(memLump_t &ml, CArrayList<memLump_t>
 			ess->convexPoints = (polyPoint_t *)localPool.Alloc(sizeof(polyPoint_t)*convexPoly.numEdges);
 			for (int j = 0; j < convexPoly.numEdges; j++)
 			{
-				polyEdge_t *edge = convexPoly.edges+j;
+				const polyEdge_t *edge = convexPoly.edges+j;
 
-				if (g_opts && g_opts->collapseEdges != 0.0)
+				if (g_opts->collapseEdges != 0.0)
 				{
 					//check for edge collapsing
 					const polyReal_t collapseEps = g_opts->collapseEdges;
-					unsigned int lastEdgeIndex = (((unsigned int)j)-1)%convexPoly.numEdges;
-					polyEdge_t *lastEdge = convexPoly.edges+lastEdgeIndex;
+					const unsigned int lastEdgeIndex = (((unsigned int)j)-1)%convexPoly.numEdges;
+					const polyEdge_t *lastEdge = convexPoly.edges+lastEdgeIndex;
 					if (lastEdge->idx[1] == edge->idx[0])
 					{
 						polyPoint_t *p1 = convexPoly.points+edge->idx[0];
@@ -915,7 +1070,7 @@ static noesisModel_t *Model_DoomWad_LoadMap(memLump_t &ml, CArrayList<memLump_t>
 					}
 				}
 
-				polyPoint_t *point = convexPoly.points+edge->idx[0];
+				const polyPoint_t *point = convexPoly.points+edge->idx[0];
 				ess->convexPoints[ess->numPoints++] = *point;
 				//useful for debugging if a certain subsector is screwing up
 				/*
@@ -943,14 +1098,188 @@ static noesisModel_t *Model_DoomWad_LoadMap(memLump_t &ml, CArrayList<memLump_t>
 
 	free_convex_poly(rapi, &convexPoly);
 
+	return extraSS;
+}
+
+//load a single map model
+static noesisModel_t *Model_DoomWad_LoadMap(memLump_t &ml, wadLoad_t &wl, doomMapRes_t &mr, noeRAPI_t *rapi)
+{
+	wadLump_t *lineDefsL = Model_DoomWad_GetMapLump(ml, "LINEDEFS");
+	wadLump_t *sideDefsL = Model_DoomWad_GetMapLump(ml, "SIDEDEFS");
+	wadLump_t *vertexesL = Model_DoomWad_GetMapLump(ml, "VERTEXES");
+	wadLump_t *segsL = Model_DoomWad_GetMapLump(ml, "SEGS\0\0\0\0");
+	wadLump_t *subSectorsL = Model_DoomWad_GetMapLump(ml, "SSECTORS");
+	wadLump_t *nodesL = Model_DoomWad_GetMapLump(ml, "NODES\0\0\0");
+	wadLump_t *sectorsL = Model_DoomWad_GetMapLump(ml, "SECTORS\0");
+	wadLump_t *behaviorL = Model_DoomWad_GetMapLump(ml, "BEHAVIOR");
+	if (!lineDefsL || !sideDefsL || !vertexesL || !segsL || !subSectorsL || !nodesL || !sectorsL)
+	{
+		return NULL;
+	}
+	const int lineDefInFileSize = (behaviorL) ? sizeof(hexenLineDef_t) : sizeof(mapLineDef_t);
+	BYTE *base = (BYTE *)ml.base;
+	mapLineDef_t *lineDefs = (mapLineDef_t *)(base + lineDefsL->ofs);
+	int numLineDefs = (lineDefsL->size / lineDefInFileSize);
+	mapSideDef_t *sideDefs = (mapSideDef_t *)(base + sideDefsL->ofs);
+	int numSideDefs = (sideDefsL->size / sizeof(mapSideDef_t));
+	mapVert_t *verts = (mapVert_t *)(base + vertexesL->ofs);
+	int numVerts = (vertexesL->size / sizeof(mapVert_t));
+	mapSector_t *sectors = (mapSector_t *)(base + sectorsL->ofs);
+	int numSectors = (sectorsL->size / sizeof(mapSector_t));
+	mapSubSector_t *subSectors = (mapSubSector_t *)(base + subSectorsL->ofs);
+	int numSubSectors = (subSectorsL->size / sizeof(mapSubSector_t));
+	mapSeg_t *segs = (mapSeg_t *)(base + segsL->ofs);
+	int numSegs = (segsL->size / sizeof(mapSeg_t));
+	mapNode_t *nodes = (mapNode_t *)(base + nodesL->ofs);
+	int numNodes = (nodesL->size / sizeof(mapNode_t));
+	if (numLineDefs <= 0 || numSideDefs <= 0 || numVerts <= 0 || numSectors <= 0 || numSubSectors <= 0 || numSegs <= 0 || numNodes <= 0)
+	{
+		return NULL;
+	}
+
+	LocalMemPool localPool;
+
+	if (behaviorL)
+	{
+		//hexen hack, just convert the linedefs
+		hexenLineDef_t *hexenLineDefs = (hexenLineDef_t *)lineDefs;
+		lineDefs = (mapLineDef_t *)localPool.Alloc(sizeof(mapLineDef_t)*numLineDefs);
+		for (int i = 0; i < numLineDefs; i++)
+		{
+			const hexenLineDef_t *hld = hexenLineDefs+i;
+			mapLineDef_t *ld = lineDefs+i;
+			ld->startVert = hld->startVert;
+			ld->endVert = hld->endVert;
+			ld->flags = hld->flags;
+			ld->specialType = 0;
+			ld->sectorTag = 0;
+			ld->rightSideDef = hld->rightSideDef;
+			ld->leftSideDef = hld->leftSideDef;
+		}
+	}
+
+	glbspVert_t *glVerts = NULL;
+	int numGLVerts = 0;
+	glbspSeg_t *glSegs = NULL;
+	int numGLSegs = 0;
+	glbspSubSect_t *glSubSects = NULL;
+	int numGLSubSects = 0;
+	int glVer = -1;
+	if (!g_opts->disableGLBSP)
+	{
+		int glMLIndex = -1;
+		//search for gl lump
+		for (int i = 0; i < wl.glLumps.Num(); i++)
+		{
+			if (!_strnicmp(ml.l->name, &wl.glLumps[i].l->name[3], 5))
+			{
+				glMLIndex = i;
+				break;
+			}
+		}
+		if (glMLIndex != -1)
+		{
+			memLump_t &glML = wl.glLumps[glMLIndex];
+			wadLump_t *glVertsLump = Model_DoomWad_GetMapLump(glML, "GL_VERT");
+			wadLump_t *glSegsLump = Model_DoomWad_GetMapLump(glML, "GL_SEGS");
+			wadLump_t *glSubSectLump = Model_DoomWad_GetMapLump(glML, "GL_SSECT");
+			//(if we've already got properly-convex gl subsectors, we don't need to even care about nodes)
+			if (glVertsLump && glSegsLump && glSubSectLump)
+			{
+				BYTE *glVertsData = (BYTE *)glML.base + glVertsLump->ofs;
+				BYTE *glSegsData = (BYTE *)glML.base + glSegsLump->ofs;
+				BYTE *glSubSectData = (BYTE *)glML.base + glSubSectLump->ofs;
+				if (!memcmp(glVertsData, "gNd2", 4))
+				{
+					//christ, who thought this was a good idea?
+					glVer = (memcmp(glSegsData, "gNd3", 4) == 0 && memcmp(glSubSectData, "gNd3", 4) == 0) ? 3 : 2;
+				}
+				else if (!memcmp(glVertsData, "gNd5", 4))
+				{
+					glVer = 5;
+				}
+				else
+				{
+					rapi->LogOutput("WARNING: Unsupported glbsp version, ignoring GL lumps.\n");
+				}
+
+				if (glVer >= 0)
+				{
+					//no need to convert verts, they're the same in all supported versions.
+					glVerts = (glbspVert_t *)(glVertsData+4);
+					numGLVerts = (glVertsLump->size-4)/sizeof(glbspVert_t);
+
+					if (glVer == 5)
+					{
+						glSegs = (glbspSeg_t *)glSegsData;
+						numGLSegs = (glSegsLump->size)/sizeof(glbspSeg_t);
+						glSubSects = (glbspSubSect_t *)glSubSectData;
+						numGLSubSects = (glSubSectLump->size)/sizeof(glbspSubSect_t);
+					}
+					else if (glVer == 3)
+					{
+						glSegs = (glbspSeg_t *)(glSegsData+4);
+						numGLSegs = (glSegsLump->size-4)/sizeof(glbspSeg_t);
+						glSubSects = (glbspSubSect_t *)(glSubSectData+4);
+						numGLSubSects = (glSubSectLump->size-4)/sizeof(glbspSubSect_t);
+					}
+					else
+					{
+						glbspSegV1_t *v1Segs = (glbspSegV1_t *)glSegsData;
+						numGLSegs = (glSegsLump->size)/sizeof(glbspSegV1_t);
+						glSegs = (glbspSeg_t *)localPool.Alloc(sizeof(glbspSeg_t)*numGLSegs);
+						for (int i = 0; i < numGLSegs; i++)
+						{
+							const glbspSegV1_t *src = v1Segs+i;
+							glbspSeg_t *dst = glSegs+i;
+							//take the first 15 bits as the index and shift the last bit up for the new format
+							dst->startVert = (src->startVert & 0x7FFF) | ((unsigned int)(src->startVert & 0x8000)<<16);
+							dst->endVert = (src->endVert & 0x7FFF) | ((unsigned int)(src->endVert & 0x8000)<<16);
+							dst->lineDef = src->lineDef;
+							dst->side = src->side;
+							dst->partnerSeg = (src->partnerSeg == 0xFFFF) ? 0xFFFFFFFF : src->partnerSeg;
+						}
+						mapSubSector_t *v1SubSects = (mapSubSector_t *)glSubSectData;
+						numGLSubSects = (glSubSectLump->size)/sizeof(mapSubSector_t);
+						glSubSects = (glbspSubSect_t *)localPool.Alloc(sizeof(glbspSubSect_t)*numGLSegs);
+						for (int i = 0; i < numGLSubSects; i++)
+						{
+							const mapSubSector_t *src = v1SubSects+i;
+							glbspSubSect_t *dst = glSubSects+i;
+							dst->segNum = src->segNum;
+							dst->firstSeg = src->firstSeg;
+						}
+					}
+				}
+			}
+		}
+	}
+
+	void *pgctx = rapi->rpgCreateContext();
+
+	extraSubSectData_t *extraSS;
+	int numExtraSS;
+	if (glVerts)
+	{
+		//we get to take the easy way out
+		numExtraSS = numGLSubSects;
+		extraSS = Model_DoomWad_TranslateGLSubSectors(lineDefs, numLineDefs, sideDefs, numSideDefs, verts, numVerts,
+			glVerts, numGLVerts, glSegs, numGLSegs, glSubSects, numGLSubSects, localPool, rapi);
+	}
+	else
+	{
+		numExtraSS = numSubSectors;
+		extraSS = Model_DoomWad_CreateConvexSubsectorPolygons(lineDefs, numLineDefs, sideDefs, numSideDefs, verts, numVerts,
+						sectors, numSectors, subSectors, numSubSectors, segs, numSegs, nodes, numNodes, localPool, rapi);
+	}
+
 	//draw subsectors
-	for (int i = 0; i < numSubSectors; i++)
+	for (int i = 0; i < numExtraSS; i++)
 	{
 		extraSubSectData_t *ess = extraSS+i;
-		mapSubSector_t *ss = subSectors+i;
 		mapSector_t *sector = sectors+ess->sectorIndex;
 
-		set_color_for_sector_light(rapi, colorMapLump, sector->lightLevel);
+		set_color_for_sector_light(rapi, wl.colorMapLump, sector->lightLevel);
 
 		if (ess->numPoints >= 3)
 		{
@@ -1028,59 +1357,13 @@ static noesisModel_t *Model_DoomWad_LoadMap(memLump_t &ml, CArrayList<memLump_t>
 			mapSideDef_t *sideDef = sideDefs+sideDefIndex;
 			mapSector_t *sector = sectors+sideDef->sectorNum;
 
-#if defined(DETERMINE_WINDING_FROM_SEG)
-			//find the associated seg
-			int subSectorIndex = -1;
-			int segIndex = -1;
-			for (int k = 0; k < numSubSectors; k++)
-			{
-				extraSubSectData_t *ess = extraSS+k;
-				if (ess->sectorIndex == sideDef->sectorNum)
-				{
-					mapSubSector_t *ss = subSectors+k;
-					for (int n = 0; n < ss->segNum; n++)
-					{
-						mapSeg_t *seg = segs+ss->firstSeg+n;
-						if (seg->lineDef == i)
-						{
-							segIndex = ss->firstSeg+n;
-							break;
-						}
-					}
-					if (segIndex >= 0)
-					{
-						subSectorIndex = k;
-						break;
-					}
-				}
-			}
-#endif
-
-			set_color_for_sector_light(rapi, colorMapLump, sector->lightLevel);
+			set_color_for_sector_light(rapi, wl.colorMapLump, sector->lightLevel);
 
 			int otherSideIndex = sideDefIndices[(j+1) & 1];
 			mapSideDef_t *otherSideDef = (otherSideIndex == 0xFFFF) ? NULL : sideDefs+otherSideIndex;
 			mapSector_t *otherSector = (otherSideDef) ? sectors+otherSideDef->sectorNum : NULL;
 
-#if defined(DETERMINE_WINDING_FROM_SEG)
-			bool backWind = true;
-			if (segIndex >= 0)
-			{
-				//there are no guarantees about line winding order, so we use the same trick again to determine the sidedef winding
-				mapSeg_t *firstSeg = segs+segIndex;
-				mapVert_t *segV1 = verts+firstSeg->firstVert;
-				mapVert_t *segV2 = verts+firstSeg->endVert;
-				polyReal_t segDir[2] = { polyReal_t(segV2->pos[0])-polyReal_t(segV1->pos[0]), polyReal_t(segV2->pos[1])-polyReal_t(segV1->pos[1]) };
-				vec_normalize_2d(segDir);
-				polyReal_t lineDir[2] = { polyReal_t(lineV2->pos[0])-polyReal_t(lineV1->pos[0]), polyReal_t(lineV2->pos[1])-polyReal_t(lineV1->pos[1]) };
-				vec_normalize_2d(lineDir);
-				mUShort_t *sideIndices = &lineDef->rightSideDef;
-				backWind = (vec_dot_2d(segDir, lineDir) > 0.0f);
-			}
-#else
-			bool backWind = (j == 0);
-#endif
-
+			const bool backWind = (j == 0);
 			//for upper/lower, we want to adjust the winding based on whether there's another sidedef and whether it has a renderable
 			//texture. otherwise we either get stuff with the wrong winding (see step on e1m1) or stuff overlapping. (see computer
 			//screens on e1m1)
@@ -1094,7 +1377,7 @@ static noesisModel_t *Model_DoomWad_LoadMap(memLump_t &ml, CArrayList<memLump_t>
 					floorHeight = g_mfn->Math_Max2(sector->floorHeight, otherSector->floorHeight);
 					ceilingHeight = g_mfn->Math_Min2(sector->ceilingHeight, otherSector->ceilingHeight);
 				}
-				bool backWindMiddle = backWind;
+				const bool backWindMiddle = backWind;
 				render_linedef_portion(rapi, mr, sideDef->middleTex, sideDef, sector, otherSector, lineDef, sideDefIndex, lineV1, lineV2,
 					floorHeight, ceilingHeight, backWindMiddle, ((lineDef->flags & 0x10) != 0) ? 3 : 0);
 			}
@@ -1102,13 +1385,13 @@ static noesisModel_t *Model_DoomWad_LoadMap(memLump_t &ml, CArrayList<memLump_t>
 			{
 				if (should_render_linedef_area(sideDef->upperTex))
 				{
-					bool backWindUp = (otherSideDef && should_render_linedef_area(otherSideDef->upperTex)) ? true : backWind;
+					const bool backWindUp = (otherSideDef && should_render_linedef_area(otherSideDef->upperTex)) ? true : backWind;
 					render_linedef_portion(rapi, mr, sideDef->upperTex, sideDef, sector, otherSector, lineDef, sideDefIndex, lineV1, lineV2,
 						otherSector->ceilingHeight, sector->ceilingHeight, backWindUp, ((lineDef->flags & 0x08) != 0) ? 2 : 0);
 				}
 				if (should_render_linedef_area(sideDef->lowerTex))
 				{
-					bool backWindDown = (otherSideDef && should_render_linedef_area(otherSideDef->lowerTex)) ? true : backWind;
+					const bool backWindDown = (otherSideDef && should_render_linedef_area(otherSideDef->lowerTex)) ? true : backWind;
 					render_linedef_portion(rapi, mr, sideDef->lowerTex, sideDef, sector, otherSector, lineDef, sideDefIndex, lineV1, lineV2,
 						sector->floorHeight, otherSector->floorHeight, backWindDown, ((lineDef->flags & 0x10) != 0) ? 1 : 0);
 				}
@@ -1119,7 +1402,7 @@ static noesisModel_t *Model_DoomWad_LoadMap(memLump_t &ml, CArrayList<memLump_t>
 	rapi->rpgOptimize();
 	rapi->rpgSetExData_Materials(mr.noeMatData);
 
-	if (g_opts && g_opts->weldVerts != 0.0)
+	if (g_opts->weldVerts != 0.0)
 	{
 		rapi->rpgWeldVerts(float(g_opts->weldVerts), RPG_WELD_FLAG_XY, NULL);
 	}
@@ -1130,20 +1413,18 @@ static noesisModel_t *Model_DoomWad_LoadMap(memLump_t &ml, CArrayList<memLump_t>
 	return mdl;
 }
 
-static void Model_DoomWad_LoadTextures(doomMapRes_t &mr, memLump_t &colorMapLump, memLump_t &paletteLump, memLump_t &pnamesLump,
-								CArrayList<memLump_t> &flatsLumps, CArrayList<memLump_t> &texturesLumps,
-								CArrayList<memLump_t> &patchesLumps, CArrayList<memLump_t> &spritesLumps, noeRAPI_t *rapi)
+static void Model_DoomWad_LoadTextures(doomMapRes_t &mr, wadLoad_t &wl, noeRAPI_t *rapi)
 {
-	if (paletteLump.base)
+	if (wl.paletteLump.base)
 	{
-		BYTE *palData = (BYTE *)paletteLump.base + paletteLump.l->ofs;
+		BYTE *palData = (BYTE *)wl.paletteLump.base + wl.paletteLump.l->ofs;
 
 		//load all the flats
 		const int flatWidth = 64;
 		const int flatHeight = 64;
-		for (int i = 0; i < flatsLumps.Num(); i++)
+		for (int i = 0; i < wl.flatsLumps.Num(); i++)
 		{
-			memLump_t &fl = flatsLumps[i];
+			memLump_t &fl = wl.flatsLumps[i];
 			char endName[8];
 			memcpy(endName, fl.l->name, 8);
 			memcpy(&endName[3], "END\0\0", 5);
@@ -1176,13 +1457,13 @@ static void Model_DoomWad_LoadTextures(doomMapRes_t &mr, memLump_t &colorMapLump
 		}
 
 		//load all the textures
-		if (pnamesLump.base)
+		if (wl.pnamesLump.base)
 		{
 			DoomResHash patchHash;
 			CArrayList<wadPatchData_t> patchDatas;
-			for (int i = 0; i < patchesLumps.Num(); i++)
+			for (int i = 0; i < wl.patchesLumps.Num(); i++)
 			{
-				memLump_t &pl = patchesLumps[i];
+				memLump_t &pl = wl.patchesLumps[i];
 				char endName[8];
 				memcpy(endName, pl.l->name, 8);
 				memcpy(&endName[3], "END\0\0", 5);
@@ -1200,13 +1481,13 @@ static void Model_DoomWad_LoadTextures(doomMapRes_t &mr, memLump_t &colorMapLump
 					patchLump++;
 				}
 			}
-			BYTE *pnamesHdr = (BYTE *)pnamesLump.base + pnamesLump.l->ofs;
+			BYTE *pnamesHdr = (BYTE *)wl.pnamesLump.base + wl.pnamesLump.l->ofs;
 			int numPatchNames = *(int *)pnamesHdr;
 			char *patchNames = (char *)(pnamesHdr+sizeof(int));
 
-			for (int i = 0; i < texturesLumps.Num(); i++)
+			for (int i = 0; i < wl.texturesLumps.Num(); i++)
 			{
-				memLump_t &tl = texturesLumps[i];
+				memLump_t &tl = wl.texturesLumps[i];
 				BYTE *hdr = (BYTE *)tl.base + tl.l->ofs;
 				int numTextures = *(int *)hdr;
 				int *textureOffsets = (int *)(hdr+sizeof(int));
@@ -1325,26 +1606,12 @@ static void Model_DoomWad_LoadTextures(doomMapRes_t &mr, memLump_t &colorMapLump
 	mr.noeMatData = rapi->Noesis_GetMatDataFromLists(mr.noeMaterials, mr.noeTextures);
 }
 
-//load it (note that you don't need to worry about validation here, if it was done in the Check function)
-noesisModel_t *Model_DoomWad_Load(BYTE *fileBuffer, int bufferLen, int &numMdl, noeRAPI_t *rapi)
+static void Model_DoomWad_ParseLumps(BYTE *fileBuffer, int bufferLen, wadLoad_t &wl)
 {
-	CArrayList<memLump_t> mapLumps;
-	CArrayList<memLump_t> allLumps;
 	wadHdr_t *hdr = (wadHdr_t *)fileBuffer;
 	wadLump_t *lumps = (wadLump_t *)(fileBuffer+hdr->lumpsOfs);
-	int numMaps = 0;
-	memLump_t colorMapLump;
-	memLump_t paletteLump;
-	memLump_t pnamesLump;
-	CArrayList<memLump_t> flatsLumps;
-	CArrayList<memLump_t> texturesLumps;
-	CArrayList<memLump_t> patchesLumps;
-	CArrayList<memLump_t> spritesLumps;
-	memset(&colorMapLump, 0, sizeof(memLump_t));
-	memset(&paletteLump, 0, sizeof(memLump_t));
-	memset(&pnamesLump, 0, sizeof(memLump_t));
 
-	//todo - if it's a pwad, prompt to load the iwad here and combine resources.
+	assert(g_opts);
 
 	for (int i = 0; i < hdr->numLumps; i++)
 	{
@@ -1354,61 +1621,103 @@ noesisModel_t *Model_DoomWad_Load(BYTE *fileBuffer, int bufferLen, int &numMdl, 
 		ml.base = hdr;
 		ml.l = l;
 		ml.lIdx = i;
-		allLumps.Append(ml);
+		wl.allLumps.Append(ml);
 		if (!memcmp(l->name, "COLORMAP", 8))
 		{
-			colorMapLump = ml;
+			wl.colorMapLump = ml;
 		}
 		else if (!memcmp(l->name, "PLAYPAL", 7))
 		{
-			paletteLump = ml;
+			wl.paletteLump = ml;
 		}
 		else if (!memcmp(l->name, "PNAMES", 6))
 		{
-			pnamesLump = ml;
+			wl.pnamesLump = ml;
 		}
 		else if (!memcmp(l->name, "TEXTURE", 7))
 		{
-			texturesLumps.Append(ml);
+			wl.texturesLumps.Append(ml);
 		}
 		else if (!memcmp(l->name, "F1_START", 8) || !memcmp(l->name, "F2_START", 8) ||
 			!memcmp(l->name, "F3_START", 8) || !memcmp(l->name, "F4_START", 8) || !memcmp(l->name, "F5_START", 8))
 		{
-			flatsLumps.Append(ml);
+			wl.flatsLumps.Append(ml);
 		}
 		else if (!memcmp(l->name, "P1_START", 8) || !memcmp(l->name, "P2_START", 8) ||
 			!memcmp(l->name, "P3_START", 8) || !memcmp(l->name, "P4_START", 8) || !memcmp(l->name, "P5_START", 8))
 		{
-			patchesLumps.Append(ml);
+			wl.patchesLumps.Append(ml);
 		}
 		else if (!memcmp(l->name, "S_START", 7) || !memcmp(l->name, "S1_START", 8) || !memcmp(l->name, "S2_START", 8))
 		{
-			spritesLumps.Append(ml);
+			wl.spritesLumps.Append(ml);
 		}
-		else if ((i+1) < hdr->numLumps && !memcmp((l+1)->name, "THINGS\0\0", 8))
+		else if (wl.allLumps.Num() > 1 && (i+1) < hdr->numLumps && !memcmp((l+1)->name, "THINGS\0\0", 8))
 		{
-			mapLumps.Append(ml);
+			wl.mapLumps.Append(ml);
+		}
+		else if (!g_opts->disableGLBSP && !memcmp(l->name, "GL_", 3))
+		{
+			wl.glLumps.Append(ml);
 		}
 	}
+}
 
-	if (mapLumps.Num() <= 0)
+//load it (note that you don't need to worry about validation here, if it was done in the Check function)
+noesisModel_t *Model_DoomWad_Load(BYTE *fileBuffer, int bufferLen, int &numMdl, noeRAPI_t *rapi)
+{
+	wadLoad_t wl;
+	memset(&wl, 0, sizeof(wadLoad_t));
+
+	int separateIWADSize = 0;
+	BYTE *separateIWADBuffer = NULL;
+
+	//todo - if it's a pwad, prompt to load the iwad here and combine resources.
+	//(everything should just work out if we call Model_DoomWad_ParseLumps on the iwad and then the pwad)
+
+	Model_DoomWad_ParseLumps(fileBuffer, bufferLen, wl);
+
+	if (wl.mapLumps.Num() <= 0)
 	{
 		rapi->LogOutput("ERROR: No maps were found in this wad.\n");
 		return NULL;
 	}
 
+	BYTE *gwaBuffer = NULL;
+	if (!g_opts->disableGLBSP)
+	{
+		//search for a .gwa
+		wchar_t gwaName[MAX_NOESIS_PATH];
+		rapi->Noesis_GetExtensionlessNameW(gwaName, rapi->Noesis_GetLastCheckedNameW());
+		wcscat_s(gwaName, MAX_NOESIS_PATH, L".gwa");
+		int gwaSize = 0;
+		gwaBuffer = rapi->Noesis_ReadFileW(gwaName, &gwaSize);
+		if (gwaBuffer && Model_DoomWad_Check(gwaBuffer, gwaSize, rapi))
+		{
+			//parse the gl lumps
+			Model_DoomWad_ParseLumps(gwaBuffer, gwaSize, wl);
+		}
+	}
+
 	doomMapRes_t mr;
-	Model_DoomWad_LoadTextures(mr, colorMapLump, paletteLump, pnamesLump, flatsLumps, texturesLumps, patchesLumps, spritesLumps, rapi);
+	Model_DoomWad_LoadTextures(mr, wl, rapi);
 
 	CArrayList<noesisModel_t *> mapModels;
-	for (int i = 0; i < mapLumps.Num(); i++)
+	for (int i = 0; i < wl.mapLumps.Num(); i++)
 	{
-		noesisModel_t *mdl = Model_DoomWad_LoadMap(mapLumps[i], allLumps, colorMapLump, mr, rapi);
+		noesisModel_t *mdl = Model_DoomWad_LoadMap(wl.mapLumps[i], wl, mr, rapi);
 		if (mdl)
 		{
 			mapModels.Append(mdl);
 		}
 	}
+
+	if (gwaBuffer)
+	{
+		//we can free the buffer now that we're done with the lump data
+		rapi->Noesis_UnpooledFree(gwaBuffer);
+	}
+
 	if (mapModels.Num() <= 0)
 	{
 		rapi->LogOutput("ERROR: No maps were loadable in this wad.\n");
@@ -1461,6 +1770,15 @@ static bool Model_WAD_OptHandlerC(const char *arg, unsigned char *store, int sto
 	return true;
 }
 
+//handle -wadnogl
+static bool Model_WAD_OptHandlerD(const char *arg, unsigned char *store, int storeSize)
+{
+	wadOpts_t *lopts = (wadOpts_t *)store;
+	assert(storeSize == sizeof(wadOpts_t));
+	lopts->disableGLBSP = true;
+	return true;
+}
+
 //called by Noesis to init the plugin
 bool NPAPI_InitLocal(void)
 {
@@ -1495,6 +1813,12 @@ bool NPAPI_InitLocal(void)
 	optParms.optName = "-wadmincut";
 	optParms.optDescr = "minimum dist to chop convex subsect poly.";
 	optParms.handler = Model_WAD_OptHandlerC;
+	g_nfn->NPAPI_AddTypeOption(g_fmtHandle, &optParms);
+
+	optParms.optName = "-wadnogl";
+	optParms.optDescr = "disables parsing glbsp lumps and looking for gwa file.";
+	optParms.flags &= ~OPTFLAG_WANTARG;
+	optParms.handler = Model_WAD_OptHandlerD;
 	g_nfn->NPAPI_AddTypeOption(g_fmtHandle, &optParms);
 
 	return true;

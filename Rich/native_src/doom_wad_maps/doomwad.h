@@ -251,11 +251,11 @@ typedef struct mapSubSector_s
 } mapSubSector_t;
 typedef struct mapSeg_s
 {
-	mUShort_t		firstVert;
+	mUShort_t		startVert;
 	mUShort_t		endVert;
 	mUShort_t		ang;
 	mUShort_t		lineDef;
-	mUShort_t		dir;
+	mUShort_t		side;
 	mUShort_t		dist;
 } mapSeg_t;
 typedef struct mapNode_s
@@ -265,6 +265,45 @@ typedef struct mapNode_s
 	short			childBoxes[2][4];
 	mUShort_t		children[2];
 } mapNode_t;
+
+typedef struct hexenLineDef_s
+{
+	mUShort_t		startVert;
+	mUShort_t		endVert;
+	mUShort_t		flags;
+	unsigned char	actions[6];
+	mUShort_t		rightSideDef;
+	mUShort_t		leftSideDef;
+} hexenLineDef_t;
+
+typedef struct glbspVert_s
+{
+	unsigned short	xFrac;
+	short			xWhole;
+	unsigned short	yFrac;
+	short			yWhole;
+} glbspVert_t;
+typedef struct glbspSegV1_s
+{
+	unsigned short	startVert;
+	unsigned short	endVert;
+	unsigned short	lineDef;
+	unsigned short	side;
+	unsigned short	partnerSeg;
+} glbspSegV1_t;
+typedef struct glbspSeg_s
+{
+	unsigned int	startVert;
+	unsigned int	endVert;
+	unsigned short	lineDef;
+	unsigned short	side;
+	unsigned int	partnerSeg;
+} glbspSeg_t;
+typedef struct glbspSubSect_s
+{
+	unsigned int	segNum;
+	unsigned int	firstSeg;
+} glbspSubSect_t;
 
 typedef struct polyPoint_s
 {
@@ -277,6 +316,8 @@ typedef struct polyEdge_s
 typedef struct extraNodeData_s
 {
 	int				parentIndex;
+	polyReal_t		partLine[2];
+	polyReal_t		partLineLen[2];
 } extraNodeData_t;
 typedef struct extraSubSectData_s
 {
@@ -309,5 +350,21 @@ typedef struct wadOpts_s
 	polyReal_t			collapseEdges;
 	polyReal_t			weldVerts;
 	polyReal_t			minSecCutDist;
+	bool				disableGLBSP;
 } wadOpts_t;
 extern wadOpts_t *g_opts;
+
+typedef struct wadLoad_s
+{
+	CArrayList<memLump_t> allLumps;
+	CArrayList<memLump_t> mapLumps;
+	CArrayList<memLump_t> glLumps;
+	CArrayList<memLump_t> flatsLumps;
+	CArrayList<memLump_t> texturesLumps;
+	CArrayList<memLump_t> patchesLumps;
+	CArrayList<memLump_t> spritesLumps;
+
+	memLump_t colorMapLump;
+	memLump_t paletteLump;
+	memLump_t pnamesLump;
+} wadLoad_t;
