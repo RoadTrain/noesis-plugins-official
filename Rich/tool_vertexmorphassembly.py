@@ -59,7 +59,7 @@ def assembleToolMethod(toolIndex):
 				firstMeshName = getFirstMeshNameFromFirstFile(frameAnimFileNames[0])
 				with open(dstFilePath, "w") as f:
 					frameCount = len(frameAnimFileNames)
-					f.write("NOESIS_SCENE_FILE\r\nversion 1\r\nphysicslib		\"\"\r\ndefaultAxis		\"0\"\r\noptionString		\"-fbxnooptimize\"\r\n\r\n")
+					f.write("NOESIS_SCENE_FILE\r\nversion 1\r\nphysicslib		\"\"\r\ndefaultAxis		\"0\"\r\noptionString		\"-fbxpreservecp\"\r\n\r\n")
 					for objCount in range(0, frameCount):
 						frameAnimFileName = frameAnimFileNames[objCount]
 						f.write("object\r\n{\r\n")
